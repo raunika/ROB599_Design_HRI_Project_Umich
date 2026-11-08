@@ -1,4 +1,4 @@
-# MOMO – LLM and Conversational Pipeline
+# MOMO – LLM and Conversational Pipeline (Jeston)
 
 ## 1. System Architecture
 
