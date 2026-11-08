@@ -1,0 +1,15 @@
+# MOMO LLM Tutor - Python dependencies
+
+# Speech-to-Text
+openai-whisper==20250625
+
+# Text-to-Speech
+kokoro-mlx==0.1.4
+
+# Wake-word detection
+sherpa-onnx==2.0.1
+
+# Audio input and processing
+sounddevice==0.5.6
+numpy==2.5.4
+webrtcvad==2.0.10

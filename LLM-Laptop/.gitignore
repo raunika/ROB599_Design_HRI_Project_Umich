@@ -1,0 +1,18 @@
+# Python virtual environments
+.venv/
+.venv*/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Audio recordings
+*.wav
+*.mp3
+
+# macOS files
+.DS_Store
+
+# Logs
+*.log
