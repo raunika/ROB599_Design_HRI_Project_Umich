@@ -26,6 +26,7 @@ All inference runs locally. No cloud-based LLM API is required.
 LLM-Laptop/
 │
 ├── momo_voice.py
+├── momo_display.py
 ├── wake_word.py
 ├── Modelfile.qwen
 ├── requirements.txt
@@ -45,6 +46,7 @@ LLM-Laptop/
 | File | Description |
 |---|---|
 | `momo_voice.py` | Main conversational pipeline integrating STT, LLM, gestures and TTS. |
+| `momo_display.py` | On-screen UI (face, talk button, captions) for the same pipeline. |
 | `wake_word.py` | Standalone wake-word detection script. |
 | `Modelfile.qwen` | Ollama Modelfile used to configure MOMO's Qwen model. |
 | `requirements.txt` | Python dependencies and pinned versions. |
@@ -132,6 +134,19 @@ Choose an interaction mode at startup:
 - Enter `2` for Manual Mode (Enter only).
 
 Say "goodbye" to end the conversation.
+
+### Running MOMO with the Display
+
+`momo_display.py` runs the same conversation as `momo_voice.py` with MOMO's on-screen face, a tap-to-talk button and captions timed to MOMO's voice. It reuses the settings and functions in `momo_voice.py`, so nothing needs to be configured twice. Tkinter is required: python.org Python includes it; with Homebrew Python run `brew install python-tk@3.12`.
+
+```bash
+python momo_display.py              # fullscreen, "Hey MOMO" or tap (hybrid)
+python momo_display.py --windowed   # 600x1024 window for testing
+python momo_display.py --manual     # tap only, no wake word
+python momo_display.py --demo       # UI only, fake replies, no models needed
+```
+
+Tap the button (or press Space) to talk; recording stops automatically when you pause. Toggle captions with the CC button (or `C`) and press Esc to quit. Saying "goodbye" ends the conversation and closes the window. Run either `momo_display.py` or `momo_voice.py`, not both, since they share the microphone.
 
 ### Standalone Wake-word Test
 
