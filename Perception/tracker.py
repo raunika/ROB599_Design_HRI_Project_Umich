@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import argparse
 from collections import deque
 import threading
 import cv2
@@ -120,7 +121,29 @@ def compute_normalized_pitch(box_center_y, frame_height, deadzone):
     else:
         return round(float(0.5 - (adjusted_mag * 0.5)), 4)
 
+def send_perception(yaw, pitch, user_name, in_frame, is_happy):
+    payload = {
+        "yaw": yaw,
+        "pitch": pitch,
+        "user_name": user_name,
+        "in_frame": in_frame,
+        "is_happy": is_happy
+    }
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.sendto(json.dumps(payload).encode("utf-8"), ("127.0.0.1", 5005))
+
 def main():
+    parser = argparse.ArgumentParser(description="DeepFace Edge Tracker")
+    parser.add_argument(
+        "--no-socket", 
+        action="store_true", 
+        help="Disable UDP socket transmission (enabled by default for Pi startup)."
+    )
+    args = parser.parse_args()
+    
+    use_socket = not args.no_socket
+    print(f"[INFO] Socket transmission is: {'ENABLED' if use_socket else 'DISABLED'}")
+
     if not os.path.exists(DB_PATH):
         os.makedirs(DB_PATH)
         print(f"[WARNING] Created empty '{DB_PATH}' directory. Add subfolders with images per person.")
@@ -132,7 +155,7 @@ def main():
 
     tracked_box = None
     tracked_name = "Unknown"
-    tracked_emotion = False         
+    tracked_emotion = False          
     emotion_buffer = deque(maxlen=TARGET_FPS)  
     
     smoothed_yaw = 0.5
@@ -287,6 +310,9 @@ def main():
             current_time = time.time()
             if current_time - last_output_time >= (1.0 / OUTPUT_HZ):
                 last_output_time = current_time
+                
+                in_frame = (current_best_box is not None)
+                
                 output_data = {
                     "timestamp": round(current_time, 2),
                     "name": tracked_name,
@@ -295,6 +321,15 @@ def main():
                     "pitch": smoothed_pitch
                 }
                 print(json.dumps(output_data))
+
+                if use_socket:
+                    send_perception(
+                        yaw=smoothed_yaw,
+                        pitch=smoothed_pitch,
+                        user_name=tracked_name,
+                        in_frame=in_frame,
+                        is_happy=bool(tracked_emotion)
+                    )
 
             # Preview UI
             if tracked_box is not None:
