@@ -97,12 +97,22 @@ def parse_lesson(raw_reply):
     def short(value, limit):
         return " ".join(value.split())[:limit] if isinstance(value, str) else ""
 
+    if "figure" not in data:
+        print(
+            "[MOMO] Qwen's reply has no 'figure' field. Re-create the model: "
+            "ollama create momo-q8 -f Modelfile.qwen"
+        )
     figure = data.get("figure")
-    figure = (
-        figure.strip()
-        if isinstance(figure, str) and figure.strip() in FIGURES
-        else None
-    )
+    if isinstance(figure, str) and figure.strip():
+        # Accept small variations like "Feedback loop" or "feedback-loop"
+        key = re.sub(r"[\s\-]+", "_", figure.strip().lower())
+        if key in FIGURES:
+            figure = key
+        else:
+            print("[MOMO] Qwen picked an unknown figure: {!r}".format(figure))
+            figure = None
+    else:
+        figure = None
     return short(data.get("topic"), 40), short(data.get("subtopic"), 60), figure
 
 
