@@ -32,6 +32,7 @@ Controls:
     Esc                    quit
 Say "goodbye" to end the conversation, as in momo_voice.py.
 """
+
 import argparse
 import io
 import json
@@ -54,17 +55,17 @@ from momo_figures import FIGURES, draw_figure, figure_title
 DEFAULT_TITLE = "Let's learn!"
 DEFAULT_SUBTITLE = "Ask MOMO a question to start"
 
-CAPTION_MAX_LINES = 2      # YouTube shows at most two lines per cue
-CAPTION_HOLD_MS = 1500     # how long the last cue stays after MOMO stops
-ANIMATION_MS = 40          # status icon frame time (25 fps)
-GOODBYE_WORDS = {"quit", "exit", "goodbye"}            # same as momo_voice.py
+CAPTION_MAX_LINES = 2  # YouTube shows at most two lines per cue
+CAPTION_HOLD_MS = 1500  # how long the last cue stays after MOMO stops
+ANIMATION_MS = 40  # status icon frame time (25 fps)
+GOODBYE_WORDS = {"quit", "exit", "goodbye"}  # same as momo_voice.py
 FAREWELL = "Goodbye! Great learning with you. See you next time!"
 
 # Colors
-BG = "#FFF6C7"             # light yellow
-INK = "#3D3524"            # warm dark brown: titles, icons
+BG = "#FFF6C7"  # light yellow
+INK = "#3D3524"  # warm dark brown: titles, icons
 INK_SOFT = "#8A7F62"
-CAPTION_BOX = "#403E32"    # YouTube's 75%-black box blended over BG (Tk has no alpha)
+CAPTION_BOX = "#403E32"  # YouTube's 75%-black box blended over BG (Tk has no alpha)
 CAPTION_TEXT = "#FFFFFF"
 CC_RED = "#FF0000"
 BUTTON_BUSY = "#E3D7A8"
@@ -97,15 +98,21 @@ def parse_lesson(raw_reply):
         return " ".join(value.split())[:limit] if isinstance(value, str) else ""
 
     figure = data.get("figure")
-    figure = figure.strip() if isinstance(figure, str) and figure.strip() in FIGURES else None
+    figure = (
+        figure.strip()
+        if isinstance(figure, str) and figure.strip() in FIGURES
+        else None
+    )
     return short(data.get("topic"), 40), short(data.get("subtopic"), 60), figure
 
 
 def mix(color_a, color_b, amount):
     """Blend two #RRGGBB colors (Tk has no transparency). amount=1 gives color_b."""
-    a = [int(color_a[i:i + 2], 16) for i in (1, 3, 5)]
-    b = [int(color_b[i:i + 2], 16) for i in (1, 3, 5)]
-    return "#" + "".join("{:02X}".format(round(x + (y - x) * amount)) for x, y in zip(a, b))
+    a = [int(color_a[i : i + 2], 16) for i in (1, 3, 5)]
+    b = [int(color_b[i : i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(
+        "{:02X}".format(round(x + (y - x) * amount)) for x, y in zip(a, b)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +123,13 @@ def wait_for_wake_or_tap(ui, mv, kws):
     import sounddevice as sd
 
     stream = kws.create_stream()
-    with sd.InputStream(device=mv.WAKE_MIC_DEVICE, channels=1, dtype="float32",
-                        samplerate=mv.SAMPLE_RATE, blocksize=mv.WAKE_CHUNK_SIZE) as mic:
+    with sd.InputStream(
+        device=mv.WAKE_MIC_DEVICE,
+        channels=1,
+        dtype="float32",
+        samplerate=mv.SAMPLE_RATE,
+        blocksize=mv.WAKE_CHUNK_SIZE,
+    ) as mic:
         while not ui.tapped.is_set():
             audio, _ = mic.read(mv.WAKE_CHUNK_SIZE)
             stream.accept_waveform(mv.SAMPLE_RATE, audio.reshape(-1))
@@ -147,70 +159,141 @@ def speak(ui, mv, tts, text):
 
 def voice_loop(ui, manual):
     post = ui.events.put
+
+    arduino = None
+    servos = None
+    iterator = None
+
+    # Initialize MOMO
     try:
         import momo_voice as mv
+
         kws = None if manual else mv.create_wake_word_detector()
+
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             tts = mv.KokoroTTS.from_pretrained()
+
     except Exception as error:
         print("\n[MOMO] Startup error:", repr(error))
-        post(("error", "MOMO couldn't start: {}".format(str(error).splitlines()[0] if str(error) else error)))
+        post(
+            (
+                "error",
+                "MOMO couldn't start: {}".format(
+                    str(error).splitlines()[0] if str(error) else error
+                ),
+            )
+        )
         return
 
-    print("\nMOMO IS READY! Mode:", "Manual (tap only)" if manual else "Hybrid (Hey MOMO + tap)")
+    # Connect Arduino
+    try:
+        arduino, servos, iterator = mv.connect_arduino()
+        print("[MOMO] Arduino connected successfully.")
 
+    except Exception as error:
+        print("\n[ARDUINO ERROR]", repr(error))
+        print("Continuing without physical gestures.")
+
+    print(
+        "\nMOMO IS READY! Mode:",
+        "Manual (tap only)" if manual else "Hybrid (Hey MOMO + tap)",
+    )
+
+    # Main conversation loop
     while True:
         try:
-            # (1) Wait for "Hey MOMO" or a tap
+            # (1) Wait for wake word or tap
             post(("state", "idle" if manual else "waiting"))
+
             if manual:
                 ui.wait_for_tap()
             else:
                 wait_for_wake_or_tap(ui, mv, kws)
 
-            # (2) Record until the student pauses (WebRTC VAD)
+            # (2) Record audio
             post(("state", "listening"))
+
             if not mv.record_audio():
                 post(("hint", "I didn't hear anything. Let's try again."))
                 continue
 
-            # (3) Whisper
+            # (3) Speech-to-text
             post(("state", "transcribing"))
+
             student_text = mv.transcribe_audio()
+
             if not student_text:
                 post(("hint", "I didn't catch that. Let's try again."))
                 continue
+
             print("\nYou:", student_text)
 
+            # (4) Check for goodbye
             if student_text.lower().strip(" .!?") in GOODBYE_WORDS:
                 print("\nMOMO:", FAREWELL)
                 speak(ui, mv, tts, FAREWELL)
                 post(("quit",))
                 return
 
-            # (4) Ollama (conversation history is kept in momo_voice.messages)
+            # (5) Get response from Ollama
             post(("state", "thinking"))
+
             answer, gesture_ids = mv.get_momo_response(student_text)
+
             if answer is None:
-                post(("hint", "MOMO couldn't come up with an answer. Please try again."))
+                post(
+                    ("hint", "MOMO couldn't come up with an answer. Please try again.")
+                )
                 continue
+
             answer = clean_for_speech(answer)
+
             topic, subtopic, figure = parse_lesson(mv.messages[-1]["content"])
+
             print("\nMOMO:", answer)
+
             if gesture_ids:
                 print("Gestures:", gesture_ids)
-            print("Topic: {!r}  Subtopic: {!r}  Figure: {}".format(topic, subtopic, figure))
+
+            print(
+                "Topic: {!r}  Subtopic: {!r}  Figure: {}".format(
+                    topic, subtopic, figure
+                )
+            )
+
             post(("lesson", topic, subtopic, figure))
 
-            # (5) Kokoro, with captions
-            speak(ui, mv, tts, answer)
+            # (6) Start Arduino gestures in a separate thread
+            gesture_thread = None
+
+            if arduino is not None and gesture_ids:
+                gesture_thread = threading.Thread(
+                    target=mv.execute_arduino_gestures,
+                    args=(servos, gesture_ids),
+                    daemon=True,
+                )
+
+                gesture_thread.start()
+
+            # (7) MOMO speaks while gestures execute
+            try:
+                speak(ui, mv, tts, answer)
+
+            finally:
+                if gesture_thread is not None:
+                    gesture_thread.join()
 
         except urllib.error.URLError as error:
             print("\n[MOMO] Ollama error:", error)
             post(("hint", "Can't reach Ollama. Check that it's running."))
+
         except Exception as error:
-            print("\n[MOMO] Error:", repr(error))   # full details stay in the terminal
-            first_line = str(error).splitlines()[0] if str(error) else type(error).__name__
+            print("\n[MOMO] Error:", repr(error))
+
+            first_line = (
+                str(error).splitlines()[0] if str(error) else type(error).__name__
+            )
+
             post(("hint", "Something went wrong: {}".format(first_line)))
 
 
@@ -219,24 +302,40 @@ def demo_loop(ui, manual):
     post = ui.events.put
     time.sleep(1.0)
     turns = [
-        ("Hi MOMO! Nice to meet you. What would you like to learn about today?",
-         "", "", None),
-        ("Good question. Think about the last time you ran up a flight of stairs. "
-         "Your body heated up, but your temperature didn't keep climbing. "
-         "What do you think your body did to stop it?",
-         "Homeostasis", "Keeping body temperature steady", "set_point"),
-        ("Exactly, you started sweating. When sweat evaporates, it carries heat "
-         "away from your skin, a bit like a radiator cooling an engine.",
-         "Homeostasis", "", "cooling_down"),
-        ("Here's the whole loop. Receptors notice the change, the hypothalamus "
-         "decides, and the sweat glands act to bring you back to 37 degrees.",
-         "Negative Feedback", "Receptors, control centre, effectors", "feedback_loop"),
+        (
+            "Hi MOMO! Nice to meet you. What would you like to learn about today?",
+            "",
+            "",
+            None,
+        ),
+        (
+            "Good question. Think about the last time you ran up a flight of stairs. "
+            "Your body heated up, but your temperature didn't keep climbing. "
+            "What do you think your body did to stop it?",
+            "Homeostasis",
+            "Keeping body temperature steady",
+            "set_point",
+        ),
+        (
+            "Exactly, you started sweating. When sweat evaporates, it carries heat "
+            "away from your skin, a bit like a radiator cooling an engine.",
+            "Homeostasis",
+            "",
+            "cooling_down",
+        ),
+        (
+            "Here's the whole loop. Receptors notice the change, the hypothalamus "
+            "decides, and the sweat glands act to bring you back to 37 degrees.",
+            "Negative Feedback",
+            "Receptors, control centre, effectors",
+            "feedback_loop",
+        ),
     ]
     for reply, topic, subtopic, figure in turns:
         post(("state", "idle" if manual else "waiting"))
         ui.wait_for_tap()
         post(("state", "listening"))
-        time.sleep(2.0)                   # stands in for VAD stopping on a pause
+        time.sleep(2.0)  # stands in for VAD stopping on a pause
         for state in ("transcribing", "thinking", "preparing"):
             post(("state", state))
             time.sleep(1.0)
@@ -260,8 +359,32 @@ def pick_family(root, *names):
 
 
 def round_rect(canvas, x1, y1, x2, y2, r, **kwargs):
-    points = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
-              x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    points = [
+        x1 + r,
+        y1,
+        x2 - r,
+        y1,
+        x2,
+        y1,
+        x2,
+        y1 + r,
+        x2,
+        y2 - r,
+        x2,
+        y2,
+        x2 - r,
+        y2,
+        x1 + r,
+        y2,
+        x1,
+        y2,
+        x1,
+        y2 - r,
+        x1,
+        y1 + r,
+        x1,
+        y1,
+    ]
     return canvas.create_polygon(points, smooth=True, **kwargs)
 
 
@@ -306,7 +429,7 @@ class MomoDisplay:
             root.geometry("{}x{}".format(self.W, self.H))
         else:
             root.attributes("-fullscreen", True)
-            root.config(cursor="none")   # touchscreen: hide the mouse pointer
+            root.config(cursor="none")  # touchscreen: hide the mouse pointer
             self.W, self.H = root.winfo_screenwidth(), root.winfo_screenheight()
         # Designed at 600x1024; scale to fit so a landscape laptop screen works too
         s = self.s = min(self.W / 600.0, self.H / 1024.0)
@@ -323,17 +446,29 @@ class MomoDisplay:
         self.figure = None
         self.t0 = time.time()
 
-        self.family = pick_family(root, "Nunito", "Avenir Next", "Ubuntu", "Noto Sans", "DejaVu Sans")
-        caption_family = pick_family(root, "Roboto", "Helvetica Neue", "Noto Sans", "DejaVu Sans")
+        self.family = pick_family(
+            root, "Nunito", "Avenir Next", "Ubuntu", "Noto Sans", "DejaVu Sans"
+        )
+        caption_family = pick_family(
+            root, "Roboto", "Helvetica Neue", "Noto Sans", "DejaVu Sans"
+        )
         self.title_size = round(42 * s)
-        self.f_title = tkfont.Font(root, family=self.family, size=-self.title_size, weight="bold")
+        self.f_title = tkfont.Font(
+            root, family=self.family, size=-self.title_size, weight="bold"
+        )
         self.f_sub = tkfont.Font(root, family=self.family, size=-round(20 * s))
         self.f_status = tkfont.Font(root, family=self.family, size=-round(22 * s))
-        self.f_button = tkfont.Font(root, family=self.family, size=-round(28 * s), weight="bold")
-        self.f_cc = tkfont.Font(root, family=caption_family, size=-round(24 * s), weight="bold")
+        self.f_button = tkfont.Font(
+            root, family=self.family, size=-round(28 * s), weight="bold"
+        )
+        self.f_cc = tkfont.Font(
+            root, family=caption_family, size=-round(24 * s), weight="bold"
+        )
         self.f_caption = tkfont.Font(root, family=caption_family, size=-round(30 * s))
 
-        self.c = tk.Canvas(root, width=self.W, height=self.H, bg=BG, highlightthickness=0)
+        self.c = tk.Canvas(
+            root, width=self.W, height=self.H, bg=BG, highlightthickness=0
+        )
         self.c.pack(fill="both", expand=True)
 
         # Layout. Without a figure the icon sits where the eyes were; with one,
@@ -341,8 +476,12 @@ class MomoDisplay:
         self.margin = 32 * s
         self.button_top = self.H - self.margin - 88 * s
         self.caption_bottom = self.button_top - 40 * s
-        caption_top = self.caption_bottom - CAPTION_MAX_LINES * (self.f_caption.metrics("linespace") + 8 * s)
-        self.header_width = self.W - 2 * self.margin - 120 * s   # stay clear of the CC button
+        caption_top = self.caption_bottom - CAPTION_MAX_LINES * (
+            self.f_caption.metrics("linespace") + 8 * s
+        )
+        self.header_width = (
+            self.W - 2 * self.margin - 120 * s
+        )  # stay clear of the CC button
         self.icon_y = self.H * 0.38
         self.status_y = self.icon_y + 120 * s
         self.fig_status_y = caption_top - 22 * s
@@ -350,13 +489,26 @@ class MomoDisplay:
         self.fig_top = 150 * s
         self.fig_bottom = self.fig_icon_y - 40 * s
 
-        self.title_id = self.c.create_text(self.margin, self.margin - 4 * s, anchor="nw",
-                                           font=self.f_title, fill=INK)
-        self.sub_id = self.c.create_text(self.margin, self.margin + 52 * s, anchor="nw",
-                                         font=self.f_sub, fill=INK_SOFT, width=self.header_width)
+        self.title_id = self.c.create_text(
+            self.margin, self.margin - 4 * s, anchor="nw", font=self.f_title, fill=INK
+        )
+        self.sub_id = self.c.create_text(
+            self.margin,
+            self.margin + 52 * s,
+            anchor="nw",
+            font=self.f_sub,
+            fill=INK_SOFT,
+            width=self.header_width,
+        )
         self.status_id = self.c.create_text(
-            self.W / 2, self.status_y, text="", font=self.f_status,
-            fill=INK_SOFT, width=self.W - 2 * self.margin, justify="center")
+            self.W / 2,
+            self.status_y,
+            text="",
+            font=self.f_status,
+            fill=INK_SOFT,
+            width=self.W - 2 * self.margin,
+            justify="center",
+        )
         self._draw_header()
         self._draw_cc()
         self._set_state("loading")
@@ -390,7 +542,9 @@ class MomoDisplay:
         # Long topics shrink (down to 28 px) and only then get cut short
         size = self.title_size
         self.f_title.configure(size=-size)
-        while self.f_title.measure(title) > self.header_width and size > round(28 * self.s):
+        while self.f_title.measure(title) > self.header_width and size > round(
+            28 * self.s
+        ):
             size -= 1
             self.f_title.configure(size=-size)
         while self.f_title.measure(title) > self.header_width and len(title) > 4:
@@ -399,7 +553,7 @@ class MomoDisplay:
         self.c.itemconfigure(self.sub_id, text=subtitle)
 
     def set_lesson(self, topic, subtopic, figure):
-        if topic:                                  # empty: keep the current topic
+        if topic:  # empty: keep the current topic
             if topic != self.topic:
                 self.subtopic = ""
             self.topic = topic
@@ -414,10 +568,22 @@ class MomoDisplay:
         self.c.delete("figure")
         if self.figure:
             m = self.margin
-            draw_figure(self.c, self.figure, m, self.fig_top, self.W - 2 * m,
-                        self.fig_bottom - self.fig_top, self.family, tag="figure")
+            draw_figure(
+                self.c,
+                self.figure,
+                m,
+                self.fig_top,
+                self.W - 2 * m,
+                self.fig_bottom - self.fig_top,
+                self.family,
+                tag="figure",
+            )
             self.c.tag_raise("caption")
-        self.c.coords(self.status_id, self.W / 2, self.fig_status_y if self.figure else self.status_y)
+        self.c.coords(
+            self.status_id,
+            self.W / 2,
+            self.fig_status_y if self.figure else self.status_y,
+        )
 
     # ---- Status icon ----------------------------------------------------
     def _animate(self):
@@ -430,28 +596,58 @@ class MomoDisplay:
         kind = self.ICON.get(self.state, "rest")
         if self.figure:
             if kind == "rest":
-                return                             # the figure is enough on its own
+                return  # the figure is enough on its own
             k, cy = 0.4 * s, self.fig_icon_y
         else:
             k, cy = s, self.icon_y
         cx = self.W / 2
 
         if kind == "rest":
-            round_rect(c, cx - 100 * k, cy - 3 * k, cx + 100 * k, cy + 3 * k, 3 * k,
-                       fill=BUTTON_BUSY, outline="", tags="icon")
+            round_rect(
+                c,
+                cx - 100 * k,
+                cy - 3 * k,
+                cx + 100 * k,
+                cy + 3 * k,
+                3 * k,
+                fill=BUTTON_BUSY,
+                outline="",
+                tags="icon",
+            )
 
-        elif kind == "ring":                       # listening: a ring that breathes out
+        elif kind == "ring":  # listening: a ring that breathes out
             p = (t % 1.6) / 1.6
             r = 60 * k * (1 + 0.7 * p)
             w = max(2, 6 * k)
-            c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=mix(BG, BUTTON_LISTEN, 0.7 * (1 - p)),
-                          width=w, tags="icon")
-            c.create_oval(cx - 60 * k, cy - 60 * k, cx + 60 * k, cy + 60 * k, outline=BUTTON_LISTEN,
-                          width=w, tags="icon")
-            c.create_oval(cx - 20 * k, cy - 20 * k, cx + 20 * k, cy + 20 * k, fill=BUTTON_LISTEN,
-                          outline="", tags="icon")
+            c.create_oval(
+                cx - r,
+                cy - r,
+                cx + r,
+                cy + r,
+                outline=mix(BG, BUTTON_LISTEN, 0.7 * (1 - p)),
+                width=w,
+                tags="icon",
+            )
+            c.create_oval(
+                cx - 60 * k,
+                cy - 60 * k,
+                cx + 60 * k,
+                cy + 60 * k,
+                outline=BUTTON_LISTEN,
+                width=w,
+                tags="icon",
+            )
+            c.create_oval(
+                cx - 20 * k,
+                cy - 20 * k,
+                cx + 20 * k,
+                cy + 20 * k,
+                fill=BUTTON_LISTEN,
+                outline="",
+                tags="icon",
+            )
 
-        elif kind == "dots":                       # thinking: dots appear one by one
+        elif kind == "dots":  # thinking: dots appear one by one
             for i in range(3):
                 p = ((t - 0.3 * i) % 1.8) / 1.8
                 if p < 0.12:
@@ -463,21 +659,41 @@ class MomoDisplay:
                 else:
                     a = 0.12
                 x = cx + (i - 1) * 64 * k
-                c.create_oval(x - 17 * k, cy - 17 * k, x + 17 * k, cy + 17 * k,
-                              fill=mix(BG, INK, a), outline="", tags="icon")
+                c.create_oval(
+                    x - 17 * k,
+                    cy - 17 * k,
+                    x + 17 * k,
+                    cy + 17 * k,
+                    fill=mix(BG, INK, a),
+                    outline="",
+                    tags="icon",
+                )
 
-        elif kind == "wave":                       # speaking: a voice-like wave
+        elif kind == "wave":  # speaking: a voice-like wave
             width, height = 420 * k, 150 * k
             loud = 0.55 + 0.45 * abs(math.sin(t * 2.3) * math.sin(t * 0.9 + 1))
-            for amp, freq, phase, alpha in ((0.45, 3.1, 3.1, 0.25), (0.7, 2.3, 1.7, 0.45), (1.0, 1.6, 0.0, 1.0)):
+            for amp, freq, phase, alpha in (
+                (0.45, 3.1, 3.1, 0.25),
+                (0.7, 2.3, 1.7, 0.45),
+                (1.0, 1.6, 0.0, 1.0),
+            ):
                 pts = []
                 for i in range(61):
                     p = i / 60
-                    y = cy + math.sin(math.pi * p) * amp * loud * height * 0.42 * \
-                        math.sin(p * math.pi * 2 * freq + t * 6 + phase)
+                    y = cy + math.sin(
+                        math.pi * p
+                    ) * amp * loud * height * 0.42 * math.sin(
+                        p * math.pi * 2 * freq + t * 6 + phase
+                    )
                     pts += [cx - width / 2 + p * width, y]
-                c.create_line(pts, fill=mix(BG, INK, alpha), width=max(2, 6.5 * k),
-                              capstyle="round", joinstyle="round", tags="icon")
+                c.create_line(
+                    pts,
+                    fill=mix(BG, INK, alpha),
+                    width=max(2, 6.5 * k),
+                    capstyle="round",
+                    joinstyle="round",
+                    tags="icon",
+                )
 
     # ---- CC toggle ------------------------------------------------------
     def _draw_cc(self):
@@ -486,19 +702,51 @@ class MomoDisplay:
         w, h = 88 * s, 60 * s
         x1, y1 = self.W - m - w, m
         # Larger invisible hit area so it's easy to tap with a finger
-        self.c.create_rectangle(x1 - 16 * s, 0, self.W, y1 + h + 20 * s,
-                                fill=BG, outline="", tags="cc")
+        self.c.create_rectangle(
+            x1 - 16 * s, 0, self.W, y1 + h + 20 * s, fill=BG, outline="", tags="cc"
+        )
         if self.captions_on:
-            round_rect(self.c, x1, y1, x1 + w, y1 + h, 12 * s, fill=INK, outline="", tags="cc")
-            self.c.create_text(x1 + w / 2, y1 + h / 2 - 3 * s, text="CC",
-                               font=self.f_cc, fill=BG, tags="cc")
-            self.c.create_rectangle(x1 + 18 * s, y1 + h + 6 * s, x1 + w - 18 * s,
-                                    y1 + h + 11 * s, fill=CC_RED, outline="", tags="cc")
+            round_rect(
+                self.c, x1, y1, x1 + w, y1 + h, 12 * s, fill=INK, outline="", tags="cc"
+            )
+            self.c.create_text(
+                x1 + w / 2,
+                y1 + h / 2 - 3 * s,
+                text="CC",
+                font=self.f_cc,
+                fill=BG,
+                tags="cc",
+            )
+            self.c.create_rectangle(
+                x1 + 18 * s,
+                y1 + h + 6 * s,
+                x1 + w - 18 * s,
+                y1 + h + 11 * s,
+                fill=CC_RED,
+                outline="",
+                tags="cc",
+            )
         else:
-            round_rect(self.c, x1, y1, x1 + w, y1 + h, 12 * s, fill=BG,
-                       outline=INK_SOFT, width=max(2, round(3 * s)), tags="cc")
-            self.c.create_text(x1 + w / 2, y1 + h / 2 - 3 * s, text="CC",
-                               font=self.f_cc, fill=INK_SOFT, tags="cc")
+            round_rect(
+                self.c,
+                x1,
+                y1,
+                x1 + w,
+                y1 + h,
+                12 * s,
+                fill=BG,
+                outline=INK_SOFT,
+                width=max(2, round(3 * s)),
+                tags="cc",
+            )
+            self.c.create_text(
+                x1 + w / 2,
+                y1 + h / 2 - 3 * s,
+                text="CC",
+                font=self.f_cc,
+                fill=INK_SOFT,
+                tags="cc",
+            )
 
     def toggle_captions(self):
         self.captions_on = not self.captions_on
@@ -511,10 +759,25 @@ class MomoDisplay:
         self.c.delete("talk")
         label, fill = self.BUTTON.get(self.state, self.BUTTON["idle"])
         text_color = BG if fill in self.LIGHT_TEXT else INK_SOFT
-        round_rect(self.c, m, self.button_top, self.W - m, self.H - m, 44 * s,
-                   fill=fill, outline="", tags="talk")
-        self.c.create_text(self.W / 2, (self.button_top + self.H - m) / 2,
-                           text=label, font=self.f_button, fill=text_color, tags="talk")
+        round_rect(
+            self.c,
+            m,
+            self.button_top,
+            self.W - m,
+            self.H - m,
+            44 * s,
+            fill=fill,
+            outline="",
+            tags="talk",
+        )
+        self.c.create_text(
+            self.W / 2,
+            (self.button_top + self.H - m) / 2,
+            text=label,
+            font=self.f_button,
+            fill=text_color,
+            tags="talk",
+        )
 
     def _set_state(self, state, message=None):
         self.state = state
@@ -548,7 +811,10 @@ class MomoDisplay:
         self.cue_gen += 1
         gen = self.cue_gen
         lines = self._wrap(text)
-        cues = [lines[i:i + CAPTION_MAX_LINES] for i in range(0, len(lines), CAPTION_MAX_LINES)]
+        cues = [
+            lines[i : i + CAPTION_MAX_LINES]
+            for i in range(0, len(lines), CAPTION_MAX_LINES)
+        ]
         total = sum(len(" ".join(cue)) for cue in cues) or 1
         t = 0.0
         for cue in cues:
@@ -573,11 +839,23 @@ class MomoDisplay:
         for i, line in enumerate(reversed(self.cue_lines)):
             cy = self.caption_bottom - i * line_h - line_h / 2
             half_w = self.f_caption.measure(line) / 2 + pad_x
-            self.c.create_rectangle(self.W / 2 - half_w, cy - line_h / 2,
-                                    self.W / 2 + half_w, cy + line_h / 2,
-                                    fill=CAPTION_BOX, outline="", tags="caption")
-            self.c.create_text(self.W / 2, cy, text=line, font=self.f_caption,
-                               fill=CAPTION_TEXT, tags="caption")
+            self.c.create_rectangle(
+                self.W / 2 - half_w,
+                cy - line_h / 2,
+                self.W / 2 + half_w,
+                cy + line_h / 2,
+                fill=CAPTION_BOX,
+                outline="",
+                tags="caption",
+            )
+            self.c.create_text(
+                self.W / 2,
+                cy,
+                text=line,
+                font=self.f_caption,
+                fill=CAPTION_TEXT,
+                tags="caption",
+            )
 
     # ---- Events from the voice thread -----------------------------------
     def _poll(self):
@@ -603,10 +881,18 @@ class MomoDisplay:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MOMO display with captions (laptop pipeline)")
-    parser.add_argument("--windowed", action="store_true", help="600x1024 window instead of fullscreen")
-    parser.add_argument("--manual", action="store_true", help="tap only, no 'Hey MOMO' wake word")
-    parser.add_argument("--demo", action="store_true", help="fake speech, no models or audio")
+    parser = argparse.ArgumentParser(
+        description="MOMO display with captions (laptop pipeline)"
+    )
+    parser.add_argument(
+        "--windowed", action="store_true", help="600x1024 window instead of fullscreen"
+    )
+    parser.add_argument(
+        "--manual", action="store_true", help="tap only, no 'Hey MOMO' wake word"
+    )
+    parser.add_argument(
+        "--demo", action="store_true", help="fake speech, no models or audio"
+    )
     args = parser.parse_args()
 
     root = tk.Tk()
