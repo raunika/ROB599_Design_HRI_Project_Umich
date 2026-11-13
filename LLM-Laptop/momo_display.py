@@ -6,9 +6,16 @@ Runs the same conversation as momo_voice.py and shows it on screen:
     "Hey MOMO" or tap -> WebRTC VAD recording -> Whisper base.en
     -> Ollama (momo-q8) -> Kokoro, with captions timed to MOMO's voice.
 
-It imports momo_voice.py's settings and functions (model name, Ollama URL,
-voice, mic device, VAD, Whisper, gestures, conversation history), so that file
-stays the one place to configure the pipeline. Nothing in it needs changing.
+The screen shows:
+    - a title that follows the lesson topic ("Let's learn!" until one starts)
+    - a status icon: thinking dots, a voice wave while MOMO talks,
+      a pulsing ring while listening (MOMO's eyes are physical, not on screen)
+    - a ready-made lesson figure (momo_figures.py) when Qwen picks one
+
+The topic and figure come from the "topic", "subtopic" and "figure" fields that
+Modelfile.qwen asks Qwen to add to its JSON reply. momo_voice.py is unchanged:
+this file imports its settings and functions, so it stays the one place to
+configure the pipeline.
 
 Setup: the same as momo_voice.py (see README.md). Tkinter must be available:
 python.org Python includes it; with Homebrew run `brew install python-tk@3.12`.
@@ -27,8 +34,9 @@ Say "goodbye" to end the conversation, as in momo_voice.py.
 """
 import argparse
 import io
+import json
+import math
 import queue
-import random
 import re
 import threading
 import time
@@ -38,20 +46,23 @@ from contextlib import redirect_stderr, redirect_stdout
 import tkinter as tk
 import tkinter.font as tkfont
 
+from momo_figures import FIGURES, draw_figure, figure_title
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-TOPIC_TITLE = "Homeostasis"
-TOPIC_SUBTITLE = "How your body keeps a steady temperature"
+DEFAULT_TITLE = "Let's learn!"
+DEFAULT_SUBTITLE = "Ask MOMO a question to start"
 
 CAPTION_MAX_LINES = 2      # YouTube shows at most two lines per cue
 CAPTION_HOLD_MS = 1500     # how long the last cue stays after MOMO stops
+ANIMATION_MS = 40          # status icon frame time (25 fps)
 GOODBYE_WORDS = {"quit", "exit", "goodbye"}            # same as momo_voice.py
 FAREWELL = "Goodbye! Great learning with you. See you next time!"
 
 # Colors
 BG = "#FFF6C7"             # light yellow
-INK = "#3D3524"            # warm dark brown: titles, Momo's eyes
+INK = "#3D3524"            # warm dark brown: titles, icons
 INK_SOFT = "#8A7F62"
 CAPTION_BOX = "#403E32"    # YouTube's 75%-black box blended over BG (Tk has no alpha)
 CAPTION_TEXT = "#FFFFFF"
@@ -71,6 +82,30 @@ def clean_for_speech(text):
     text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.MULTILINE)
     text = re.sub(r"^\s*[-+*]\s+", "", text, flags=re.MULTILINE)
     return " ".join(text.split())
+
+
+def parse_lesson(raw_reply):
+    """Read topic, subtopic and figure from Qwen's JSON reply (all optional)."""
+    try:
+        data = json.loads(raw_reply)
+    except (TypeError, ValueError):
+        return "", "", None
+    if not isinstance(data, dict):
+        return "", "", None
+
+    def short(value, limit):
+        return " ".join(value.split())[:limit] if isinstance(value, str) else ""
+
+    figure = data.get("figure")
+    figure = figure.strip() if isinstance(figure, str) and figure.strip() in FIGURES else None
+    return short(data.get("topic"), 40), short(data.get("subtopic"), 60), figure
+
+
+def mix(color_a, color_b, amount):
+    """Blend two #RRGGBB colors (Tk has no transparency). amount=1 gives color_b."""
+    a = [int(color_a[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(color_b[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join("{:02X}".format(round(x + (y - x) * amount)) for x, y in zip(a, b))
 
 
 # ---------------------------------------------------------------------------
@@ -160,9 +195,12 @@ def voice_loop(ui, manual):
                 post(("hint", "MOMO couldn't come up with an answer. Please try again."))
                 continue
             answer = clean_for_speech(answer)
+            topic, subtopic, figure = parse_lesson(mv.messages[-1]["content"])
             print("\nMOMO:", answer)
             if gesture_ids:
                 print("Gestures:", gesture_ids)
+            print("Topic: {!r}  Subtopic: {!r}  Figure: {}".format(topic, subtopic, figure))
+            post(("lesson", topic, subtopic, figure))
 
             # (5) Kokoro, with captions
             speak(ui, mv, tts, answer)
@@ -179,23 +217,30 @@ def voice_loop(ui, manual):
 def demo_loop(ui, manual):
     """Fake conversation for testing the UI without models or audio."""
     post = ui.events.put
-    post(("state", "loading"))
     time.sleep(1.0)
-    replies = [
-        "Good question. Think about the last time you ran up a flight of stairs. "
-        "Your body heated up, but your temperature didn't keep climbing. "
-        "What do you think your body did to stop it?",
-        "Exactly, you started sweating. When sweat evaporates, it carries heat "
-        "away from your skin, a bit like a radiator cooling an engine.",
+    turns = [
+        ("Hi MOMO! Nice to meet you. What would you like to learn about today?",
+         "", "", None),
+        ("Good question. Think about the last time you ran up a flight of stairs. "
+         "Your body heated up, but your temperature didn't keep climbing. "
+         "What do you think your body did to stop it?",
+         "Homeostasis", "Keeping body temperature steady", "set_point"),
+        ("Exactly, you started sweating. When sweat evaporates, it carries heat "
+         "away from your skin, a bit like a radiator cooling an engine.",
+         "Homeostasis", "", "cooling_down"),
+        ("Here's the whole loop. Receptors notice the change, the hypothalamus "
+         "decides, and the sweat glands act to bring you back to 37 degrees.",
+         "Negative Feedback", "Receptors, control centre, effectors", "feedback_loop"),
     ]
-    for reply in replies:
+    for reply, topic, subtopic, figure in turns:
         post(("state", "idle" if manual else "waiting"))
         ui.wait_for_tap()
         post(("state", "listening"))
         time.sleep(2.0)                   # stands in for VAD stopping on a pause
         for state in ("transcribing", "thinking", "preparing"):
             post(("state", state))
-            time.sleep(0.8)
+            time.sleep(1.0)
+        post(("lesson", topic, subtopic, figure))
         seconds = len(reply.split()) / 2.6
         post(("state", "speaking"))
         post(("segment", reply, seconds))
@@ -241,6 +286,14 @@ class MomoDisplay:
         "speaking": ("MOMO is talking", BUTTON_BUSY),
         "error": ("Unavailable", BUTTON_BUSY),
     }
+    # Which status icon each state shows (anything else: a quiet resting line)
+    ICON = {
+        "listening": "ring",
+        "transcribing": "dots",
+        "thinking": "dots",
+        "preparing": "dots",
+        "speaking": "wave",
+    }
     TAPPABLE = ("idle", "waiting")
     LIGHT_TEXT = (INK, BUTTON_LISTEN)
 
@@ -265,29 +318,46 @@ class MomoDisplay:
         self.captions_on = True
         self.cue_lines = []
         self.cue_gen = 0
+        self.topic = ""
+        self.subtopic = ""
+        self.figure = None
+        self.t0 = time.time()
 
-        title_family = pick_family(root, "Nunito", "Avenir Next", "Ubuntu", "Noto Sans", "DejaVu Sans")
+        self.family = pick_family(root, "Nunito", "Avenir Next", "Ubuntu", "Noto Sans", "DejaVu Sans")
         caption_family = pick_family(root, "Roboto", "Helvetica Neue", "Noto Sans", "DejaVu Sans")
-        self.f_title = tkfont.Font(root, family=title_family, size=-round(42 * s), weight="bold")
-        self.f_sub = tkfont.Font(root, family=title_family, size=-round(20 * s))
-        self.f_status = tkfont.Font(root, family=title_family, size=-round(22 * s))
-        self.f_button = tkfont.Font(root, family=title_family, size=-round(28 * s), weight="bold")
+        self.title_size = round(42 * s)
+        self.f_title = tkfont.Font(root, family=self.family, size=-self.title_size, weight="bold")
+        self.f_sub = tkfont.Font(root, family=self.family, size=-round(20 * s))
+        self.f_status = tkfont.Font(root, family=self.family, size=-round(22 * s))
+        self.f_button = tkfont.Font(root, family=self.family, size=-round(28 * s), weight="bold")
         self.f_cc = tkfont.Font(root, family=caption_family, size=-round(24 * s), weight="bold")
         self.f_caption = tkfont.Font(root, family=caption_family, size=-round(30 * s))
 
         self.c = tk.Canvas(root, width=self.W, height=self.H, bg=BG, highlightthickness=0)
         self.c.pack(fill="both", expand=True)
 
+        # Layout. Without a figure the icon sits where the eyes were; with one,
+        # the figure fills the middle and a small icon + status sit under it.
         self.margin = 32 * s
-        self.eye_y = self.H * 0.38
         self.button_top = self.H - self.margin - 88 * s
         self.caption_bottom = self.button_top - 40 * s
+        caption_top = self.caption_bottom - CAPTION_MAX_LINES * (self.f_caption.metrics("linespace") + 8 * s)
+        self.header_width = self.W - 2 * self.margin - 120 * s   # stay clear of the CC button
+        self.icon_y = self.H * 0.38
+        self.status_y = self.icon_y + 120 * s
+        self.fig_status_y = caption_top - 22 * s
+        self.fig_icon_y = self.fig_status_y - 48 * s
+        self.fig_top = 150 * s
+        self.fig_bottom = self.fig_icon_y - 40 * s
 
-        self._draw_header()
-        self._draw_eyes(closed=False)
+        self.title_id = self.c.create_text(self.margin, self.margin - 4 * s, anchor="nw",
+                                           font=self.f_title, fill=INK)
+        self.sub_id = self.c.create_text(self.margin, self.margin + 52 * s, anchor="nw",
+                                         font=self.f_sub, fill=INK_SOFT, width=self.header_width)
         self.status_id = self.c.create_text(
-            self.W / 2, self.eye_y + 120 * s, text="", font=self.f_status,
+            self.W / 2, self.status_y, text="", font=self.f_status,
             fill=INK_SOFT, width=self.W - 2 * self.margin, justify="center")
+        self._draw_header()
         self._draw_cc()
         self._set_state("loading")
 
@@ -298,7 +368,7 @@ class MomoDisplay:
         root.bind("<Escape>", lambda e: root.destroy())
 
         root.after(50, self._poll)
-        root.after(3000, self._blink)
+        root.after(ANIMATION_MS, self._animate)
 
     # ---- Talk button (shared with the voice thread) ---------------------
     def tap_talk(self):
@@ -310,27 +380,104 @@ class MomoDisplay:
         self.tapped.wait(timeout)
         self.tapped.clear()
 
-    # ---- Static pieces --------------------------------------------------
+    # ---- Title and subtitle ---------------------------------------------
     def _draw_header(self):
-        m, s = self.margin, self.s
-        self.c.create_text(m, m - 4 * s, anchor="nw", text=TOPIC_TITLE,
-                           font=self.f_title, fill=INK)
-        self.c.create_text(m, m + 50 * s, anchor="nw", text=TOPIC_SUBTITLE,
-                           font=self.f_sub, fill=INK_SOFT,
-                           width=self.W - 2 * m - 120 * s)   # stay clear of the CC button
+        title = self.topic or DEFAULT_TITLE
+        if not self.topic:
+            subtitle = DEFAULT_SUBTITLE
+        else:
+            subtitle = self.subtopic or figure_title(self.figure)
+        # Long topics shrink (down to 28 px) and only then get cut short
+        size = self.title_size
+        self.f_title.configure(size=-size)
+        while self.f_title.measure(title) > self.header_width and size > round(28 * self.s):
+            size -= 1
+            self.f_title.configure(size=-size)
+        while self.f_title.measure(title) > self.header_width and len(title) > 4:
+            title = title[:-2].rstrip() + "…"
+        self.c.itemconfigure(self.title_id, text=title)
+        self.c.itemconfigure(self.sub_id, text=subtitle)
 
-    def _draw_eyes(self, closed):
-        s = self.s
-        self.c.delete("eyes")
-        w, h = 64 * s, (12 * s if closed else 104 * s)
-        for cx in (self.W / 2 - 80 * s, self.W / 2 + 80 * s):
-            round_rect(self.c, cx - w / 2, self.eye_y - h / 2, cx + w / 2,
-                       self.eye_y + h / 2, min(w, h) / 2, fill=INK, outline="", tags="eyes")
+    def set_lesson(self, topic, subtopic, figure):
+        if topic:                                  # empty: keep the current topic
+            if topic != self.topic:
+                self.subtopic = ""
+            self.topic = topic
+            self.subtopic = subtopic
+        if figure != self.figure:
+            self.figure = figure
+            self._draw_figure()
+        self._draw_header()
 
-    def _blink(self):
-        self._draw_eyes(closed=True)
-        self.root.after(140, lambda: self._draw_eyes(closed=False))
-        self.root.after(random.randint(3000, 6500), self._blink)
+    # ---- Lesson figure --------------------------------------------------
+    def _draw_figure(self):
+        self.c.delete("figure")
+        if self.figure:
+            m = self.margin
+            draw_figure(self.c, self.figure, m, self.fig_top, self.W - 2 * m,
+                        self.fig_bottom - self.fig_top, self.family, tag="figure")
+            self.c.tag_raise("caption")
+        self.c.coords(self.status_id, self.W / 2, self.fig_status_y if self.figure else self.status_y)
+
+    # ---- Status icon ----------------------------------------------------
+    def _animate(self):
+        self._draw_icon(time.time() - self.t0)
+        self.root.after(ANIMATION_MS, self._animate)
+
+    def _draw_icon(self, t):
+        c, s = self.c, self.s
+        c.delete("icon")
+        kind = self.ICON.get(self.state, "rest")
+        if self.figure:
+            if kind == "rest":
+                return                             # the figure is enough on its own
+            k, cy = 0.4 * s, self.fig_icon_y
+        else:
+            k, cy = s, self.icon_y
+        cx = self.W / 2
+
+        if kind == "rest":
+            round_rect(c, cx - 100 * k, cy - 3 * k, cx + 100 * k, cy + 3 * k, 3 * k,
+                       fill=BUTTON_BUSY, outline="", tags="icon")
+
+        elif kind == "ring":                       # listening: a ring that breathes out
+            p = (t % 1.6) / 1.6
+            r = 60 * k * (1 + 0.7 * p)
+            w = max(2, 6 * k)
+            c.create_oval(cx - r, cy - r, cx + r, cy + r, outline=mix(BG, BUTTON_LISTEN, 0.7 * (1 - p)),
+                          width=w, tags="icon")
+            c.create_oval(cx - 60 * k, cy - 60 * k, cx + 60 * k, cy + 60 * k, outline=BUTTON_LISTEN,
+                          width=w, tags="icon")
+            c.create_oval(cx - 20 * k, cy - 20 * k, cx + 20 * k, cy + 20 * k, fill=BUTTON_LISTEN,
+                          outline="", tags="icon")
+
+        elif kind == "dots":                       # thinking: dots appear one by one
+            for i in range(3):
+                p = ((t - 0.3 * i) % 1.8) / 1.8
+                if p < 0.12:
+                    a = 0.12 + 0.88 * p / 0.12
+                elif p < 0.55:
+                    a = 1.0
+                elif p < 0.75:
+                    a = 1.0 - 0.88 * (p - 0.55) / 0.2
+                else:
+                    a = 0.12
+                x = cx + (i - 1) * 64 * k
+                c.create_oval(x - 17 * k, cy - 17 * k, x + 17 * k, cy + 17 * k,
+                              fill=mix(BG, INK, a), outline="", tags="icon")
+
+        elif kind == "wave":                       # speaking: a voice-like wave
+            width, height = 420 * k, 150 * k
+            loud = 0.55 + 0.45 * abs(math.sin(t * 2.3) * math.sin(t * 0.9 + 1))
+            for amp, freq, phase, alpha in ((0.45, 3.1, 3.1, 0.25), (0.7, 2.3, 1.7, 0.45), (1.0, 1.6, 0.0, 1.0)):
+                pts = []
+                for i in range(61):
+                    p = i / 60
+                    y = cy + math.sin(math.pi * p) * amp * loud * height * 0.42 * \
+                        math.sin(p * math.pi * 2 * freq + t * 6 + phase)
+                    pts += [cx - width / 2 + p * width, y]
+                c.create_line(pts, fill=mix(BG, INK, alpha), width=max(2, 6.5 * k),
+                              capstyle="round", joinstyle="round", tags="icon")
 
     # ---- CC toggle ------------------------------------------------------
     def _draw_cc(self):
@@ -442,6 +589,8 @@ class MomoDisplay:
                     self._set_state(event[1])
                 elif kind == "segment":
                     self.show_segment(event[1], event[2])
+                elif kind == "lesson":
+                    self.set_lesson(event[1], event[2], event[3])
                 elif kind == "hint":
                     self.hint = event[1]
                 elif kind == "error":

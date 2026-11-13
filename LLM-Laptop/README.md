@@ -27,6 +27,7 @@ LLM-Laptop/
 │
 ├── momo_voice.py
 ├── momo_display.py
+├── momo_figures.py
 ├── wake_word.py
 ├── Modelfile.qwen
 ├── requirements.txt
@@ -46,7 +47,8 @@ LLM-Laptop/
 | File | Description |
 |---|---|
 | `momo_voice.py` | Main conversational pipeline integrating STT, LLM, gestures and TTS. |
-| `momo_display.py` | On-screen UI (face, talk button, captions) for the same pipeline. |
+| `momo_display.py` | On-screen UI (topic title, status icon, talk button, captions) for the same pipeline. |
+| `momo_figures.py` | Ready-made lesson figures the display can show, chosen by Qwen. |
 | `wake_word.py` | Standalone wake-word detection script. |
 | `Modelfile.qwen` | Ollama Modelfile used to configure MOMO's Qwen model. |
 | `requirements.txt` | Python dependencies and pinned versions. |
@@ -137,7 +139,7 @@ Say "goodbye" to end the conversation.
 
 ### Running MOMO with the Display
 
-`momo_display.py` runs the same conversation as `momo_voice.py` with MOMO's on-screen face, a tap-to-talk button and captions timed to MOMO's voice. It reuses the settings and functions in `momo_voice.py`, so nothing needs to be configured twice. Tkinter is required: python.org Python includes it; with Homebrew Python run `brew install python-tk@3.12`.
+`momo_display.py` runs the same conversation as `momo_voice.py` on MOMO's screen: the lesson topic as the title ("Let's learn!" until a lesson starts), a status icon (pulsing ring while listening, dots while thinking, a wave while MOMO talks), a tap-to-talk button and captions timed to MOMO's voice. When it helps, Qwen also picks a ready-made figure from `momo_figures.py` to show in the middle of the screen. Topic and figure come from the `topic`, `subtopic` and `figure` fields in Qwen's JSON reply, so re-create the model after changing `Modelfile.qwen`: `ollama create momo-q8 -f Modelfile.qwen`. To add a figure, add it to `FIGURES` in `momo_figures.py` and describe its ID in the FIGURE list in `Modelfile.qwen`. It reuses the settings and functions in `momo_voice.py`, so nothing needs to be configured twice. Tkinter is required: python.org Python includes it; with Homebrew Python run `brew install python-tk@3.12`.
 
 ```bash
 python momo_display.py              # fullscreen, "Hey MOMO" or tap (hybrid)
