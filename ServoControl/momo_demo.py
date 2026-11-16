@@ -16,7 +16,7 @@ SERVO_PINS = {
     "head_tilt": 3,
     "left_arm": 10,
     "right_arm": 9,
-    "left_eyelid": 11,
+    "left_eyelid": 6,
     "right_eyelid": 11,
 }
 
@@ -31,7 +31,7 @@ HOME_ANGLES = {
 
 current_angles = HOME_ANGLES.copy()
 
-SMOOTH_STEPS = 20
+SMOOTH_STEPS = 35
 
 
 # ============================================================
@@ -55,8 +55,10 @@ GESTURES = {
 ARDUINO_GESTURES = {
 
     1: [  # Blink
-        ({"left_eyelid": 30, "right_eyelid": 30}, 0.15),
-        ({"left_eyelid": 90, "right_eyelid": 90}, 0.15),
+        ({"left_eyelid": 135, "right_eyelid": 35}, 0.8),
+        ({"left_eyelid": 90, "right_eyelid": 90}, 0.8),
+	({"left_eyelid": 135, "right_eyelid": 35}, 0.8),
+        ({"left_eyelid": 90, "right_eyelid": 90}, 0.8),
     ],
 
     2: [  # Nod
@@ -74,23 +76,23 @@ ARDUINO_GESTURES = {
     ],
 
     4: [  # Right arm raise
-        ({"right_arm": 150}, 0.3),
+        ({"right_arm": 170}, 0.3),
         ({"right_arm": 75}, 0.3),
     ],
 
     5: [  # Left arm raise
-        ({"left_arm": 40}, 0.3),
+        ({"left_arm": 20}, 0.3),
         ({"left_arm": 95}, 0.3),
     ],
 
     6: [  # Both arms up
-        ({"left_arm": 65, "right_arm": 120}, 0.25),
-        ({"left_arm": 95, "right_arm": 75}, 0.25),
+        ({"left_arm": 20, "right_arm": 170}, 0.4),
+        ({"left_arm": 95, "right_arm": 75}, 0.4),
     ],
 
     7: [  # Delayed two-arm raise
-        ({"left_arm": 50}, 0.3),
-        ({"right_arm": 150}, 0.3),
+        ({"left_arm": 20}, 0.3),
+        ({"right_arm": 170}, 0.3),
         ({"left_arm": 95, "right_arm": 75}, 0.3),
     ],
 }
