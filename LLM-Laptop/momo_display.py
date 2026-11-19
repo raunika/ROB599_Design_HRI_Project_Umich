@@ -204,6 +204,9 @@ def voice_loop(ui, manual):
         print("\n[ARDUINO ERROR]", repr(error))
         print("Continuing without physical gestures.")
 
+    # Optional camera presence (name/expression) from the perception script
+    mv.start_presence_listener()
+
     print(
         "\nMOMO IS READY! Mode:",
         "Manual (tap only)" if manual else "Hybrid (Hey MOMO + tap)",
@@ -248,13 +251,20 @@ def voice_loop(ui, manual):
             # (5) Get response from Ollama
             post(("state", "thinking"))
 
-            answer, gesture_ids = mv.get_momo_response(student_text)
+            llm_input, perception_tag = mv.build_llm_input(student_text)
+
+            if perception_tag:
+                print(perception_tag)
+
+            answer, gesture_ids = mv.get_momo_response(llm_input)
 
             if answer is None:
                 post(
                     ("hint", "MOMO couldn't come up with an answer. Please try again.")
                 )
                 continue
+
+            mv.mark_tag_delivered(perception_tag)
 
             answer = clean_for_speech(answer)
 

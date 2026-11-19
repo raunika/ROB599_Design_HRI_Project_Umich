@@ -702,7 +702,7 @@ def main():
             print("Continuing in voice-only mode.")
 
         start_presence_listener()
-		
+
         mode = select_interaction_mode()
 
         kws = None
@@ -755,7 +755,7 @@ def main():
                 tts.speak(farewell, voice=VOICE, speed=1.0)
                 break
 
-			llm_input, perception_tag = build_llm_input(student_text)
+            llm_input, perception_tag = build_llm_input(student_text)
 
             if perception_tag:
                 print(perception_tag)
@@ -767,7 +767,7 @@ def main():
                 print("MOMO couldn't generate a response. Please try again.")
                 continue
 
-			mark_tag_delivered(perception_tag)
+            mark_tag_delivered(perception_tag)
 
             print(f"\nMOMO: {answer}")
 
