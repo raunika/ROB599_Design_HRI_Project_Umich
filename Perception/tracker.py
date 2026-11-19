@@ -25,6 +25,10 @@ DEADZONE_WIDTH = 0.5        # Center frame dead zone
 SMOOTHING_ALPHA = 0.3       # Bounding box smoothing coefficient
 RECOGNITION_INTERVAL = 0.5  # Interval used for recognotion to increase efficiency
 EMOTION_INTERVAL = 0.5      # Interval used for emotion processing to increase efficiency
+
+PRESENCE_PORT = 5006          # Local UDP port the LLM script (momo.py) listens on
+PRESENCE_HOLD_SECONDS = 1.5   # Keep reporting "present" this long after the last sighting
+                              # (stops one missed detection from flipping presence off)
 # =================================================
 
 class AsyncVideoCapture:
@@ -132,6 +136,22 @@ def send_perception(yaw, pitch, user_name, in_frame, is_happy):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.sendto(json.dumps(payload).encode("utf-8"), ("127.0.0.1", 5005))
 
+# One reusable socket for the presence token sent to the LLM script.
+_presence_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+def send_presence(name, present, positive):
+    # Send the presence token to the LLM script over local UDP.
+    payload = {
+        "name": name if present else None,  # who MOMO is talking to
+        "present": bool(present),
+        "positive": bool(positive),
+        "timestamp": time.time(),           # lets the LLM side ignore stale data
+    }
+    try:
+        _presence_sock.sendto(json.dumps(payload).encode("utf-8"), ("127.0.0.1", PRESENCE_PORT))
+    except OSError:
+        pass
+
 def main():
     parser = argparse.ArgumentParser(description="DeepFace Edge Tracker")
     parser.add_argument(
@@ -164,6 +184,9 @@ def main():
     last_recognition_time = 0.0
     last_emotion_time = 0.0
     last_output_time = time.time()
+
+    last_seen_time = 0.0
+    last_seen_name = None
 
     print(f"[INFO] Starting optimized DeepFace loop at ~{TARGET_FPS} FPS. Primary User: {PRIMARY_USER}. Press 'q' to exit.")
 
@@ -245,6 +268,9 @@ def main():
             if current_best_box is not None:
                 bx, by, bw, bh = current_best_box
 
+                last_seen_time = time.time()
+                last_seen_name = tracked_name
+
                 if tracked_box is None:
                     tracked_box = current_best_box
                 else:
@@ -267,10 +293,12 @@ def main():
                 if current_time - last_emotion_time >= EMOTION_INTERVAL:
                     last_emotion_time = current_time
                     try:
+                        if face_crop.size == 0:
+                            raise ValueError("Empty face crop")
                         analysis = DeepFace.analyze(
-                            img_path=frame,
+                            img_path=face_crop,
                             actions=['emotion'],
-                            detector_backend=DETECTOR_BACKEND,
+                            detector_backend='skip',
                             enforce_detection=False,
                             silent=True
                         )
@@ -330,6 +358,13 @@ def main():
                         in_frame=in_frame,
                         is_happy=bool(tracked_emotion)
                     )
+
+                present = (current_time - last_seen_time) <= PRESENCE_HOLD_SECONDS
+                send_presence(
+                    name=last_seen_name,
+                    present=present,
+                    positive=bool(tracked_emotion) if present else False,
+                )
 
             # Preview UI
             if tracked_box is not None:
