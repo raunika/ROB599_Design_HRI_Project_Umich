@@ -4,6 +4,7 @@ import json
 import argparse
 from collections import deque
 import threading
+import socket
 import cv2
 import numpy as np
 from deepface import DeepFace
