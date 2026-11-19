@@ -10,6 +10,7 @@ import select
 import inspect
 import threading
 import time
+import socket
 
 from collections import deque
 from contextlib import redirect_stdout, redirect_stderr
@@ -52,6 +53,8 @@ WAKE_MODEL_DIR = BASE_DIR / "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-0
 WAKE_CHUNK_SIZE = 1600
 WAKE_MIC_DEVICE = 1
 
+PRESENCE_PORT = 5006           # Must match PRESENCE_PORT in the perception script
+PRESENCE_STALE_SECONDS = 3.0   # Older data than this = perception treated as offline
 
 # Suppress the specific PyTorch deprecation warning.
 warnings.filterwarnings(
@@ -286,6 +289,93 @@ def close_arduino(board, servos):
 
         print("Arduino connection closed.")
 
+# ============================================================
+# PERCEPTION
+# ============================================================
+
+_presence_lock = threading.Lock()
+_latest_presence = None
+_latest_presence_time = 0.0
+
+def _presence_listener(sock):
+    global _latest_presence, _latest_presence_time
+
+    while True:
+        try:
+            data, _ = sock.recvfrom(4096)
+            packet = json.loads(data.decode("utf-8"))
+        except (OSError, ValueError):
+            continue
+
+        if not isinstance(packet, dict):
+            continue
+
+        with _presence_lock:
+            _latest_presence = packet
+            _latest_presence_time = time.time()
+
+
+def start_presence_listener():
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", PRESENCE_PORT))
+    except OSError as error:
+        print(f"[PERCEPTION] Listener disabled ({error}). Continuing without it.")
+        return
+
+    threading.Thread(target=_presence_listener, args=(sock,), daemon=True).start()
+    print(f"[PERCEPTION] Listening for presence on UDP port {PRESENCE_PORT} (optional).")
+
+
+def get_presence():
+    """Latest presence token, or None if perception is off or the data is stale."""
+    with _presence_lock:
+        if _latest_presence is None:
+            return None
+        if time.time() - _latest_presence_time > PRESENCE_STALE_SECONDS:
+            return None
+        return dict(_latest_presence)
+
+_last_sent_tag = None  # Tag the model last received (it stays in chat history)
+
+def build_perception_tag():
+    """Current [PERCEPTION] line, or None when perception is off/stale."""
+    presence = get_presence()
+
+    if presence is None:
+        return None
+
+    if presence.get("present"):
+        name = presence.get("name")
+        if isinstance(name, str):
+            name = " ".join(name.split())[:40]
+        if not name or name.lower() in {"unknown", "no face"} or name.startswith("Waiting for"):
+            name = "unknown person"
+
+        expression = "positive" if presence.get("positive") else "neutral"
+        tag = f"[PERCEPTION] present: yes | name: {name} | expression: {expression}"
+    else:
+        tag = "[PERCEPTION] present: no"
+
+    return tag
+
+
+def build_llm_input(student_text):
+    tag = build_perception_tag()
+
+    if tag is None or tag == _last_sent_tag:
+        return student_text, None  # Nothing new: message is unchanged.
+
+    return f"{tag}\n{student_text}", tag
+
+
+def mark_tag_delivered(tag):
+    """Call only after a successful LLM reply (a failed turn is removed from history)."""
+    global _last_sent_tag
+
+    if tag is not None:
+        _last_sent_tag = tag
 
 # ============================================================
 # INTERACTION MODE
@@ -611,6 +701,8 @@ def main():
             print("\n[ARDUINO ERROR]", error)
             print("Continuing in voice-only mode.")
 
+        start_presence_listener()
+		
         mode = select_interaction_mode()
 
         kws = None
@@ -658,21 +750,24 @@ def main():
 
             # Check for exit command
             if student_text.lower().strip(" .!?") in {"quit", "exit", "goodbye"}:
-
                 farewell = "Goodbye! Great learning with you. " "See you next time!"
-
                 print(f"\nMOMO: {farewell}")
-
                 tts.speak(farewell, voice=VOICE, speed=1.0)
-
                 break
 
+			llm_input, perception_tag = build_llm_input(student_text)
+
+            if perception_tag:
+                print(perception_tag)
+
             # Get response from LLM
-            answer, gesture_ids = get_momo_response(student_text)
+            answer, gesture_ids = get_momo_response(llm_input)
 
             if answer is None:
                 print("MOMO couldn't generate a response. Please try again.")
                 continue
+
+			mark_tag_delivered(perception_tag)
 
             print(f"\nMOMO: {answer}")
 
