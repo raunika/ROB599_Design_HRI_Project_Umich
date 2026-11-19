@@ -8,6 +8,7 @@ import warnings
 import sys
 import select
 import inspect
+import random
 import threading
 import time
 import socket
@@ -96,7 +97,7 @@ SERVO_PINS = {
     "head_tilt": 3,
     "left_arm": 10,
     "right_arm": 9,
-    "left_eyelid": 11,
+    "left_eyelid": 6,
     "right_eyelid": 11,
 }
 
@@ -111,9 +112,10 @@ HOME_ANGLES = {
 
 # Track the current position of every servo
 current_angles = HOME_ANGLES.copy()
+SERVO_LOCK = threading.RLock()
 
 # Number of intermediate movements for smooth motion
-SMOOTH_STEPS = 20
+SMOOTH_STEPS = 25
 
 
 # Each gesture contains sequential steps.
@@ -127,14 +129,14 @@ ARDUINO_GESTURES = {
         ({"right_arm": 90}, 0.3),
     ],
     2: [  # Blink
-        ({"left_eyelid": 30, "right_eyelid": 30}, 0.15),
+        ({"left_eyelid": 125, "right_eyelid": 40}, 0.15),
         ({"left_eyelid": 90, "right_eyelid": 90}, 0.15),
     ],
     3: [  # Nod
         ({"head_tilt": 110}, 0.3),
         ({"head_tilt": 90}, 0.3),
         ({"head_tilt": 110}, 0.3),
-	({"head_tilt": 90}, 0.3) ],
+    ({"head_tilt": 90}, 0.3) ],
 
     4: [  # Head tilt left
         ({"head_pan": 113}, 0.3),
@@ -174,41 +176,60 @@ ARDUINO_GESTURES = {
 # ============================================================
 
 def smooth_move_servos(servos, targets, duration, steps=SMOOTH_STEPS):
-    """
-    Gradually move servos to target angles using smooth interpolation.
+    """Gradually move servos to target angles using smooth interpolation."""
+    with SERVO_LOCK:
+        start_angles = {
+            name: current_angles[name]
+            for name in targets
+        }
 
-    duration: Total time for the movement, in seconds.
-    steps: Number of intermediate positions.
-    """
+        delay = duration / steps
 
-    start_angles = {
-        name: current_angles[name]
-        for name in targets
-    }
+        for step in range(1, steps + 1):
+            # Progress from 0 to 1
+            t = step / steps
 
-    delay = duration / steps
+            # Smooth acceleration and deceleration
+            progress = 3 * t**2 - 2 * t**3
 
-    for step in range(1, steps + 1):
+            for name, target in targets.items():
+                start = start_angles[name]
+                angle = start + (target - start) * progress
+                servos[name].write(int(round(angle)))
 
-        # Progress from 0 to 1
-        t = step / steps
+            time.sleep(delay)
 
-        # Smooth acceleration and deceleration
-        progress = 3 * t**2 - 2 * t**3
-
+        # Store the final commanded positions
         for name, target in targets.items():
+            current_angles[name] = target
 
-            start = start_angles[name]
 
-            angle = start + (target - start) * progress
 
-            servos[name].write(int(round(angle)))
 
-        time.sleep(delay)
-
-    # Store the final commanded positions
-    for name, target in targets.items():
-        current_angles[name] = target
+def random_blink_loop(servos, stop_event):
+    """Autonomously blink at randomized intervals, independently of the LLM."""
+    print("[MOMO] Automatic blinking enabled.")
+    while not stop_event.wait(random.uniform(3.0, 6.0)):
+        with SERVO_LOCK:
+            smooth_move_servos(
+                servos,
+                {
+                    "left_eyelid": 135,
+                    "right_eyelid": 40,
+                },
+                duration=random.uniform(0.3, 0.55),
+                steps=30,
+            )
+            time.sleep(random.uniform(0.8, 0.10))
+            smooth_move_servos(
+                servos,
+                {
+                    "left_eyelid": 90,
+                    "right_eyelid": 90,
+                },
+                duration=random.uniform(0.25, 0.45),
+                steps=30,
+            )
 
 
 
@@ -609,6 +630,7 @@ def execute_gestures(gesture_ids):
             isinstance(gesture_id, int)
             and not isinstance(gesture_id, bool)
             and gesture_id in GESTURES
+            and gesture_id != 2
         ):
             valid_gestures.append(gesture_id)
 
@@ -691,6 +713,8 @@ def main():
     arduino = None
     servos = None
     iterator = None
+    blink_stop_event = threading.Event()
+    blink_thread = None
 
     try:
         # Connect to Arduino
@@ -700,6 +724,14 @@ def main():
         except Exception as error:
             print("\n[ARDUINO ERROR]", error)
             print("Continuing in voice-only mode.")
+
+        if servos is not None:
+            blink_thread = threading.Thread(
+                target=random_blink_loop,
+                args=(servos, blink_stop_event),
+                daemon=True,
+            )
+            blink_thread.start()
 
         start_presence_listener()
 
@@ -804,6 +836,11 @@ def main():
         print("Check that Ollama is running and try again.")
 
     finally:
+        # Stop the autonomous blink thread before shutting down the servos.
+        if blink_thread is not None:
+            blink_stop_event.set()
+            blink_thread.join(timeout=2)
+
         # Always return servos to home and close Arduino
         if arduino is not None:
             close_arduino(arduino, servos)

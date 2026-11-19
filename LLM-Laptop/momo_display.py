@@ -173,6 +173,7 @@ def voice_loop(ui, manual):
     arduino = None
     servos = None
     iterator = None
+    blink_thread = None
 
     # Initialize MOMO
     try:
@@ -203,6 +204,15 @@ def voice_loop(ui, manual):
     except Exception as error:
         print("\n[ARDUINO ERROR]", repr(error))
         print("Continuing without physical gestures.")
+
+    # Autonomous blinking (reuses momo_voice.py's smooth servo blink routine)
+    if servos is not None:
+        blink_thread = threading.Thread(
+            target=mv.random_blink_loop,
+            args=(servos, ui.shutdown_event),
+            daemon=True,
+        )
+        blink_thread.start()
 
     # Optional camera presence (name/expression) from the perception script
     mv.start_presence_listener()
@@ -456,6 +466,7 @@ class MomoDisplay:
 
         self.events = queue.Queue()
         self.tapped = threading.Event()
+        self.shutdown_event = threading.Event()
         self.state = "loading"
         self.hint = ""
         self.captions_on = True
@@ -920,6 +931,7 @@ def main():
     worker = demo_loop if args.demo else voice_loop
     threading.Thread(target=worker, args=(ui, args.manual), daemon=True).start()
     root.mainloop()
+    ui.shutdown_event.set()
 
 
 if __name__ == "__main__":
